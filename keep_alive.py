@@ -1,17 +1,18 @@
-
 from flask import Flask
 from threading import Thread
+import os
 
-app = Flask(__name__)
+app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "I'm alive!"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
 
 def keep_alive():
-    server = Thread(target=run)
-    server.daemon = True
-    server.start()
+    t = Thread(target=run)
+    t.start()
+    print("Keep-Alive Server Running! Check URL: https://albion-signup-bot.noface0025.repl.co")
+
