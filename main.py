@@ -1,16 +1,14 @@
 import discord
 import os
-import subprocess
 from discord.ext import commands
 from dotenv import load_dotenv
-
+from keep_alive import keep_alive
 
 # Load environment variables
-load_dotenv()
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 if TOKEN is None:
-    print("ERROR: Bot token not found. Make sure it is set in the .env file or Replit Secrets.")
+    print("ERROR: Bot token not found. Make sure it is set in Replit Secrets.")
     exit(1)
 
 bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
@@ -41,32 +39,17 @@ roles = {
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
+    print("Bot is ready and listening for commands!")
 
-keep_alive()
-
-# GitHub Deployment Commands
-def deploy_to_github():
-    try:
-        github_token = os.getenv("GITHUB_TOKEN")
-        github_repo = "github.com/noface0025/albion-signup-bot.git"
-
-        subprocess.run(["git", "init"], check=True)
-        subprocess.run(["git", "add", "."], check=True)
-        subprocess.run(["git", "commit", "-m", "Auto commit from bot"], check=True)
-        subprocess.run(["git", "branch", "-M", "main"], check=True)
-        subprocess.run(["git", "remote", "set-url", "origin", f"https://{github_token}@{github_repo}"], check=True)
-        subprocess.run(["git", "push", "-u", "origin", "main", "--force"], check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"GitHub deployment failed: {e}")
-
-deploy_to_github()
-
-
+@bot.command()
+async def start(ctx, party_type: str):
+    """Starts a new party based on the type given."""
+    await create_party(ctx, party_type.lower())
 
 async def create_party(ctx, party_type):
     """Helper function to create a new party and post the signup list."""
     if party_type not in roles:
-        await ctx.send("Invalid party type. Available options: clap, brawl, skirmish")
+        await ctx.send("Invalid party type. Available options: clap, brawl, 10")
         return
 
     role_set = roles[party_type]
@@ -88,4 +71,72 @@ async def create_party(ctx, party_type):
     await ctx.send(f"@everyone {party_type.capitalize()} Party signup started! Type the number of the role you want in {thread.mention}. Only one person per role! Type '-' to remove yourself from the signup list before selecting a new role.")
     await display_party_list(ctx.guild.id, party_type)
 
-bot.run(TOKEN)
+async def display_party_list(guild_id, party_type):
+    """Displays the current party list in the main channel."""
+    if (guild_id, party_type) not in parties:
+        return
+
+    party = parties[(guild_id, party_type)]
+    msg = f"**{party_type.capitalize()} Party List:**\n"
+
+    for category, role_dict in party["roles"].items():
+        msg += f"\n**{category}**\n"
+        for num, role in role_dict.items():
+            user = party["slots"].get(num)
+            if user:
+                msg += f"{num}: {role} - {user.mention}\n"
+            else:
+                msg += f"{num}: {role} - [Open Slot]\n"
+
+    await party["main_message"].edit(content=msg)
+
+@bot.event
+async def on_message(message):
+    """Handles user sign-ups and removals inside the thread."""
+    if message.author == bot.user:
+        return
+
+    for (guild_id, party_type), party in parties.items():
+        if message.guild.id == guild_id and message.channel == party["thread"]:
+
+            # User wants to leave their current role
+            if message.content.strip() == "-":
+                for num, user in party["slots"].items():
+                    if user == message.author:
+                        party["slots"][num] = None
+                        await message.channel.send(f"{message.author.mention} has been removed from the {party_type.capitalize()} signup list.")
+                        await display_party_list(guild_id, party_type)
+                        return
+                await message.channel.send("You are not signed up.")
+                return
+
+            try:
+                number = int(message.content.strip())
+
+                # Check if user is already signed up for a role
+                for slot_num, signed_user in party["slots"].items():
+                    if signed_user == message.author:
+                        await message.channel.send(f"{message.author.mention}, you are already signed up for a role. Use '-' to leave your current role before signing up for another.")
+                        return
+
+                # Assign role if it's available
+                for category, role_dict in party["roles"].items():
+                    if number in role_dict:
+                        if party["slots"].get(number):
+                            await message.channel.send(f"Role {role_dict[number]} is already taken!")
+                            return
+
+                        party["slots"][number] = message.author
+                        await message.channel.send(f"{message.author.mention} signed up as {role_dict[number]}!")
+                        await display_party_list(guild_id, party_type)
+                        return
+
+                await message.channel.send("Invalid number. Please choose a valid role number from the list.")
+            except ValueError:
+                await message.channel.send("Please enter a valid number corresponding to a role.")
+
+    await bot.process_commands(message)
+
+if __name__ == "__main__":
+    keep_alive()  # Start the keep-alive web server before running the bot
+    bot.run(TOKEN)
