@@ -24,8 +24,10 @@ def keep_alive():
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 if TOKEN is None:
-    print("ERROR: Bot token not found. Make sure it is set in Replit Secrets.")
+    print("ERROR: Bot token not found. Ensure it's set in Replit Secrets (Tools > Secrets).")
     exit(1)
+else:
+    print(f"Bot token loaded successfully: {TOKEN[:5]}...")  # Only prints first few characters for security
 
 bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 
