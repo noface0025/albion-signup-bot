@@ -3,6 +3,22 @@ import os
 from discord.ext import commands
 from dotenv import load_dotenv
 from keep_alive import keep_alive
+from flask import Flask
+from threading import Thread
+
+# Keep-Alive Server
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "I'm alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
 
 # Load environment variables
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -89,53 +105,6 @@ async def display_party_list(guild_id, party_type):
                 msg += f"{num}: {role} - [Open Slot]\n"
 
     await party["main_message"].edit(content=msg)
-
-@bot.event
-async def on_message(message):
-    """Handles user sign-ups and removals inside the thread."""
-    if message.author == bot.user:
-        return
-
-    for (guild_id, party_type), party in parties.items():
-        if message.guild.id == guild_id and message.channel == party["thread"]:
-
-            # User wants to leave their current role
-            if message.content.strip() == "-":
-                for num, user in party["slots"].items():
-                    if user == message.author:
-                        party["slots"][num] = None
-                        await message.channel.send(f"{message.author.mention} has been removed from the {party_type.capitalize()} signup list.")
-                        await display_party_list(guild_id, party_type)
-                        return
-                await message.channel.send("You are not signed up.")
-                return
-
-            try:
-                number = int(message.content.strip())
-
-                # Check if user is already signed up for a role
-                for slot_num, signed_user in party["slots"].items():
-                    if signed_user == message.author:
-                        await message.channel.send(f"{message.author.mention}, you are already signed up for a role. Use '-' to leave your current role before signing up for another.")
-                        return
-
-                # Assign role if it's available
-                for category, role_dict in party["roles"].items():
-                    if number in role_dict:
-                        if party["slots"].get(number):
-                            await message.channel.send(f"Role {role_dict[number]} is already taken!")
-                            return
-
-                        party["slots"][number] = message.author
-                        await message.channel.send(f"{message.author.mention} signed up as {role_dict[number]}!")
-                        await display_party_list(guild_id, party_type)
-                        return
-
-                await message.channel.send("Invalid number. Please choose a valid role number from the list.")
-            except ValueError:
-                await message.channel.send("Please enter a valid number corresponding to a role.")
-
-    await bot.process_commands(message)
 
 if __name__ == "__main__":
     keep_alive()  # Start the keep-alive web server before running the bot
