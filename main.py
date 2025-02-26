@@ -47,16 +47,20 @@ keep_alive()
 # GitHub Deployment Commands
 def deploy_to_github():
     try:
+        github_token = os.getenv("GITHUB_TOKEN")
+        github_repo = "github.com/noface0025/albion-signup-bot.git"
+
         subprocess.run(["git", "init"], check=True)
         subprocess.run(["git", "add", "."], check=True)
         subprocess.run(["git", "commit", "-m", "Auto commit from bot"], check=True)
         subprocess.run(["git", "branch", "-M", "main"], check=True)
-        subprocess.run(["git", "remote", "set-url", "origin", "https://github.com/noface0025/albion-signup-bot.git"], check=True)
+        subprocess.run(["git", "remote", "set-url", "origin", f"https://{github_token}@{github_repo}"], check=True)
         subprocess.run(["git", "push", "-u", "origin", "main", "--force"], check=True)
     except subprocess.CalledProcessError as e:
         print(f"GitHub deployment failed: {e}")
 
 deploy_to_github()
+
 
 
 async def create_party(ctx, party_type):
