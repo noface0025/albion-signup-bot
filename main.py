@@ -193,7 +193,15 @@ async def on_message(message):
                         await message.channel.send(f"{message.author.mention} you are already signed up. Use `-` to remove yourself first.")
                         return
                     party["slots"][number] = message.author
-                    await message.channel.send(f"{message.author.mention} signed up as {party['roles'][party_type].get(number, 'Unknown Role')}!")
+                    
+                    # Find which category contains this role number
+                    role_name = "Unknown Role"
+                    for category, role_dict in party["roles"].items():
+                        if number in role_dict:
+                            role_name = role_dict[number]
+                            break
+                    
+                    await message.channel.send(f"{message.author.mention} signed up as {role_name}!")
                     await display_party_list(guild_id, party_type)
             except ValueError:
                 await message.channel.send(f"{message.author.mention} invalid input. Enter a number to sign up or `-` to remove yourself.")
