@@ -11,6 +11,7 @@ from flask import Flask
 from threading import Thread
 import psutil
 
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 
@@ -19,7 +20,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "I'm alive! This is the correct URL to use in UptimeRobot."
+    return "I'm alive! "
 
 def run():
     app.run(host="0.0.0.0", port=5000)  # Changed port to avoid conflicts
@@ -69,26 +70,56 @@ except gspread.exceptions.SpreadsheetNotFound:
     exit(1)
 
 def load_roles_from_sheets():
-    """Fetches party compositions from Google Sheets."""
+    """Fetches party compositions from Google Sheets and validates row data."""
     global roles
     roles = {}
     worksheets = sheet.worksheets()
+
     for ws in worksheets:
         party_type = ws.title.lower()
         roles[party_type] = {}
         data = ws.get_all_values()
-        for row in data[1:]:
+
+        for row in data[1:]:  # Skip headers
+            if len(row) < 3:  # Check if the row has at least 3 columns
+                logging.warning(f"Skipping invalid row in Google Sheet (Not enough columns): {row}")
+                continue
+
             try:
-                role_number = int(row[0])  # Convert role number to integer
+                role_number = int(row[0].strip())  # Convert role number to integer
                 role_name = row[1].strip()
                 category = row[2].strip()
 
                 if category not in roles[party_type]:
                     roles[party_type][category] = {}
                 roles[party_type][category][role_number] = role_name
+
             except ValueError:
-                logging.warning(f"Skipping invalid row in Google Sheet: {row}")
+                logging.warning(f"Skipping invalid row in Google Sheet (Invalid number format): {row}")
+
     logging.info("Roles loaded from Google Sheets.")
+
+
+# Tracking Sheet Setup
+tracking_sheet_name = "Signup Tracking"
+try:
+    tracking_sheet = sheet.worksheet(tracking_sheet_name)
+except gspread.exceptions.WorksheetNotFound:
+    tracking_sheet = sheet.add_worksheet(title=tracking_sheet_name, rows="100", cols="2")
+    tracking_sheet.update("A1", [["User ID", "Signups"]])
+
+def update_signup_count(user_id):
+    """Updates the signup count for a user in the Google Sheet."""
+    records = tracking_sheet.get_all_records()
+    user_found = False
+    for i, record in enumerate(records, start=2):
+        if str(record["User ID"]) == str(user_id):
+            new_count = int(record["Signups"]) + 1
+            tracking_sheet.update(f"B{i}", new_count)
+            user_found = True
+            break
+    if not user_found:
+        tracking_sheet.append_row([str(user_id), "1"])
 
 # Load roles from the Google Sheet
 load_roles_from_sheets()
@@ -114,6 +145,34 @@ async def refresh_roles(ctx):
     await ctx.send("Roles have been refreshed from Google Sheets!")
 
 @bot.command()
+async def list_parties(ctx):
+    """Lists all available party types."""
+    available_parties = ', '.join(roles.keys())
+    await ctx.send(f"**Available Party Types:** {available_parties}")
+
+@bot.command()
+async def albionbothelp(ctx):
+    """Displays available commands."""
+    help_message = (
+        "**Albion Bot Commands:**\n"
+        "!start <party_type> - Starts a new party signup.\n"
+        "!refresh_roles - Refreshes roles from Google Sheets.\n"
+        "!albionbothelp - Displays this help message."
+    )
+    await ctx.send(help_message)
+
+@bot.command()
+async def check_signups(ctx, user: discord.Member = None):
+    """Checks the number of signups a user has."""
+    user = user or ctx.author
+    records = tracking_sheet.get_all_records()
+    for record in records:
+        if str(record["User ID"]) == str(user.id):
+            await ctx.send(f"{user.mention} has signed up {record['Signups']} times.")
+            return
+    await ctx.send(f"{user.mention} has not signed up yet.")
+
+@bot.command()
 async def start(ctx, party_type: str):
     """Starts a new party based on the type given."""
     await create_party(ctx, party_type.lower())
@@ -125,8 +184,9 @@ async def create_party(ctx, party_type):
         return
 
     role_set = roles[party_type]
-    thread = await ctx.channel.create_thread(name=f"Albion Online {party_type.capitalize()} Signup", type=discord.ChannelType.public_thread)
     message = await ctx.send(f"Initializing {party_type.capitalize()} party signup...")
+    await display_party_list(ctx.guild.id, party_type)
+    thread = await ctx.channel.create_thread(name=f"Albion Online {party_type.capitalize()} Signup", type=discord.ChannelType.public_thread)
     parties[(ctx.guild.id, party_type)] = {
         "thread": thread,
         "slots": {},
@@ -142,7 +202,6 @@ async def create_party(ctx, party_type):
     first_role_number = min(role_set[list(role_set.keys())[0]].keys())
     parties[(ctx.guild.id, party_type)]["slots"][first_role_number] = ctx.author
 
-    await ctx.send(f"@everyone {party_type.capitalize()} Party signup started! Type the number of the role you want in {thread.mention}. Only one person per role! Type '-' to remove yourself before selecting a new role.")
     await display_party_list(ctx.guild.id, party_type)
 
 async def display_party_list(guild_id, party_type):
@@ -192,19 +251,79 @@ async def on_message(message):
                     if user_signed_up:
                         await message.channel.send(f"{message.author.mention} you are already signed up. Use `-` to remove yourself first.")
                         return
+
+                    # Assign the user to the role slot
                     party["slots"][number] = message.author
-                    
+
+                    # Log the signup to Google Sheets (ONLY if it's their first signup)
+                    await log_signup_to_sheets(message.author.id, party_type)
+
                     # Find which category contains this role number
                     role_name = "Unknown Role"
                     for category, role_dict in party["roles"].items():
                         if number in role_dict:
                             role_name = role_dict[number]
                             break
-                    
+
                     await message.channel.send(f"{message.author.mention} signed up as {role_name}!")
                     await display_party_list(guild_id, party_type)
             except ValueError:
                 await message.channel.send(f"{message.author.mention} invalid input. Enter a number to sign up or `-` to remove yourself.")
+
+async def log_signup_to_sheets(user_id, party_type):
+    """Logs a user's signup in the Google Sheet, ensuring only one signup per event."""
+    try:
+        # Fetch user details (optimize caching)
+        user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+        username = user.name if user else f"Unknown({user_id})"
+
+        tracking_sheet = sheet.worksheet("Signup Tracking")
+        data = tracking_sheet.get_all_values()
+
+        # Ensure headers exist and include "User"
+        headers = data[0] if data else ["User"]
+
+        # If party type isn't listed, add it as a new column
+        if party_type not in headers:
+            headers.append(party_type)
+            tracking_sheet.update("A1", [headers])  # Update headers immediately
+
+        # Convert data into a dictionary for quick lookup
+        existing_users = {row[0]: row[1:] for row in data[1:] if row}
+
+        # Find the column index for the new party type
+        party_col_index = headers.index(party_type)
+
+        # Prepare data to update
+        updated_data = []
+        user_exists = False
+
+        for uname, signups in existing_users.items():
+            # Ensure all rows match header length
+            while len(signups) < len(headers) - 1:
+                signups.append("0")
+
+            # If user exists, only mark first signup for this event
+            if uname == username:
+                user_exists = True
+                if signups[party_col_index - 1] == "0":  # If first signup
+                    signups[party_col_index - 1] = "1"
+            updated_data.append([uname] + signups)
+
+        # If user is new, add them to tracking
+        if not user_exists:
+            new_user_row = ["0"] * (len(headers) - 1)
+            new_user_row[party_col_index - 1] = "1"
+            updated_data.append([username] + new_user_row)
+
+        # Only update necessary rows
+        tracking_sheet.update(f"A2", updated_data)
+
+        logging.info(f"Logged signup for {username} (ID: {user_id}) in {party_type}")
+
+    except Exception as e:
+        logging.error(f"Error logging signup: {e}")
+
 
 if __name__ == "__main__":
     keep_alive()
